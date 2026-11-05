@@ -1,15 +1,15 @@
 {
-  "name": "toriel-boss-rush",
+  "name": "multi-undertale",
   "version": "1.0.0",
-  "description": "Undertale-style Toriel boss rush game for Render",
+  "description": "멀티 언더테일 WebSocket 서버",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "dependencies": {
-    "express": "^4.21.0"
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
