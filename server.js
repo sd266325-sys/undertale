@@ -209,6 +209,17 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'skip': {
+        // 방장의 스킵을 방 전체에 중계
+        if (!currentRoom) return;
+        broadcast(currentRoom, {
+          type: 'skip',
+          id: playerId,
+          kind: msg.kind || 'turn'  // turn | fight | story
+        }, ws);
+        break;
+      }
+
       case 'leave': {
         cleanup();
         break;
@@ -218,21 +229,34 @@ wss.on('connection', (ws) => {
 
   function cleanup() {
     if (!currentRoom) return;
-    currentRoom.clients.delete(ws);
-    broadcast(currentRoom, {
+    const room = currentRoom;
+    room.clients.delete(ws);
+    const wasHost = room.hostId === playerId;
+
+    if (room.clients.size === 0) {
+      rooms.delete(room.code);
+      currentRoom = null;
+      return;
+    }
+
+    // 방장이 나갔으면 남은 사람 중 한 명에게 방장 이전 (방 해체하지 않음)
+    if (wasHost) {
+      const [nextWs, nextInfo] = [...room.clients.entries()][0];
+      room.hostId = nextInfo.id;
+      nextInfo.role = 'host';
+      room.clients.set(nextWs, nextInfo);
+      broadcast(room, {
+        type: 'host_transfer',
+        id: nextInfo.id,
+        state: getRoomState(room)
+      });
+    }
+
+    broadcast(room, {
       type: 'player_leave',
       id: playerId,
-      state: getRoomState(currentRoom)
+      state: getRoomState(room)
     });
-    if (currentRoom.clients.size === 0 || currentRoom.hostId === playerId) {
-      if (currentRoom.hostId === playerId && currentRoom.clients.size > 0) {
-        broadcast(currentRoom, { type: 'error', message: '방장이 나갔습니다' });
-        for (const [other] of currentRoom.clients) {
-          try { other.close(); } catch (e) {}
-        }
-      }
-      rooms.delete(currentRoom.code);
-    }
     currentRoom = null;
   }
 

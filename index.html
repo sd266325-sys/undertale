@@ -553,7 +553,14 @@ function wsSend(data){
 
 function connectWS(){
   return new Promise((resolve, reject)=>{
-    if(_ws && _ws.readyState === 1){ resolve(); return; }
+    if(_ws && (_ws.readyState === 1 || _ws.readyState === 0)){
+      if(_ws.readyState === 1){ resolve(); return; }
+      // connecting - wait
+      const t0 = setTimeout(()=>reject(new Error('timeout')), 8000);
+      const prev = _ws.onopen;
+      _ws.onopen = (e)=>{ clearTimeout(t0); if(prev)_ws.onopen=prev; resolve(); };
+      return;
+    }
     try{
       _ws = new WebSocket(WS_URL);
     }catch(e){
@@ -565,7 +572,9 @@ function connectWS(){
     _ws.onopen = ()=>{ clearTimeout(t); resolve(); };
     _ws.onerror = (e)=>{ clearTimeout(t); reject(e); };
     _ws.onclose = ()=>{
-      if(mp.on) ost('서버와 연결이 끊어졌습니다');
+      // 의도적 종료가 아니면 알림만 (방 폭파하지 않음 - 서버가 처리)
+      if(mp.on) ost('서버와 연결이 끊어졌습니다. 새로고침 후 다시 입장해 주세요.');
+      _ws = null;
     };
     _ws.onmessage = (ev)=>{
       let msg;
@@ -647,6 +656,22 @@ function onServerMessage(msg){
       break;
     case 'error':
       ost(msg.message || '오류');
+      break;
+    case 'skip':
+      // 방장이 스킵함 → 게스트도 동일 적용
+      if(mp.role === 'guest'){
+        if(msg.kind === 'turn') _doSkipTurn();
+        else if(msg.kind === 'fight') _doSkipFight();
+        else if(msg.kind === 'story') _doSkipStory();
+      }
+      break;
+    case 'host_transfer':
+      if(msg.id === _myId){
+        mp.role = 'host';
+        myCol = '#f00';
+        ost('방장 권한을 받았습니다');
+      }
+      if(msg.state) _roomState = msg.state;
       break;
   }
 }
@@ -764,9 +789,26 @@ function stopAll(){for(const k in trk)trk[k].pause()}
 function play(k){stopAll();if(!music.checked)return;trk[k].currentTime=0;trk[k].play().catch(()=>{})}
 const easy=document.getElementById('easy');
 const live=()=>state==='attack'||state==='talk'||state==='dead';
-function skipTurn(){if(!live()||srOn||mp.on)return;bul=[];hp=20;inv=0;pi++;if(pi>=PAT.length){nextScene()}else startTalk()}
-function skipFight(){if(!live()||srOn||mp.on)return;bul=[];hp=20;inv=0;pi=PAT.length;nextScene()}
-function skipStory(){if(mp.on&&mp.role==='guest')return;if(state==='story')nextScene();else if(state==='cut')state='end'}
+function skipTurn(){
+  if(!live()||srOn)return;
+  if(mp.on&&mp.role==='guest')return; // 게스트는 방장 스킵만 따름
+  if(mp.on&&mp.role==='host') wsSend({type:'skip', kind:'turn'});
+  _doSkipTurn();
+}
+function _doSkipTurn(){bul=[];hp=20;inv=0;ghost=false;pi++;if(pi>=PAT.length){nextScene()}else startTalk()}
+function skipFight(){
+  if(!live()||srOn)return;
+  if(mp.on&&mp.role==='guest')return;
+  if(mp.on&&mp.role==='host') wsSend({type:'skip', kind:'fight'});
+  _doSkipFight();
+}
+function _doSkipFight(){bul=[];hp=20;inv=0;ghost=false;pi=PAT.length;nextScene()}
+function skipStory(){
+  if(mp.on&&mp.role==='guest')return;
+  if(mp.on&&mp.role==='host') wsSend({type:'skip', kind:'story'});
+  _doSkipStory();
+}
+function _doSkipStory(){if(state==='story')nextScene();else if(state==='cut')state='end'}
 document.getElementById('b1').onclick=skipTurn;document.getElementById('b2').onclick=skipFight;document.getElementById('b3').onclick=skipStory;
 requestAnimationFrame(loop);
 </script></body></html>
