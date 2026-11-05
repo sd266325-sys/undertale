@@ -1,7 +1,5 @@
 /**
  * 멀티 언더테일 - WebSocket 서버
- * Render / Railway / 로컬에서 실행 가능
- *
  * 설치: npm install
  * 실행: npm start
  */
@@ -12,7 +10,7 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 
-// roomCode -> { clients: Map<ws, playerInfo>, hostId, started }
+// roomCode -> { clients: Map<ws, info>, hostId, started }
 const rooms = new Map();
 
 function genCode() {
@@ -46,18 +44,13 @@ function getRoomState(room) {
       dead: info.dead
     });
   }
-  return {
-    code: room.code,
-    started: room.started,
-    hostId: room.hostId,
-    players
-  };
+  return { code: room.code, started: room.started, hostId: room.hostId, players };
 }
 
-// Static file server + WebSocket
 const server = http.createServer((req, res) => {
-  let filePath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
-  filePath = path.join(__dirname, filePath.replace(/\.\./g, ''));
+  let urlPath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+  urlPath = path.normalize(urlPath).replace(/^(\.\.[/\\])+/, '');
+  const filePath = path.join(__dirname, urlPath);
 
   const ext = path.extname(filePath).toLowerCase();
   const types = {
@@ -66,14 +59,12 @@ const server = http.createServer((req, res) => {
     '.css': 'text/css',
     '.json': 'application/json',
     '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml'
+    '.webp': 'image/webp'
   };
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      res.writeHead(404);
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not Found');
       return;
     }
@@ -83,13 +74,12 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ server });
-
 let nextId = 1;
 
 wss.on('connection', (ws) => {
   const playerId = 'p' + (nextId++);
   let currentRoom = null;
-  let info = {
+  const info = {
     id: playerId,
     role: '',
     col: '#f00',
@@ -108,11 +98,9 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'create': {
-        // 방 생성
         let code = genCode();
-        // 혹시 겹치면 재시도
         let tries = 0;
-        while (rooms.has(code) && tries++ < 10) code = genCode();
+        while (rooms.has(code) && tries++ < 20) code = genCode();
 
         const room = {
           code,
@@ -138,7 +126,7 @@ wss.on('connection', (ws) => {
       }
 
       case 'join': {
-        const code = (msg.code || '').toUpperCase().trim();
+        const code = String(msg.code || '').toUpperCase().trim();
         const room = rooms.get(code);
         if (!room) {
           ws.send(JSON.stringify({ type: 'error', message: '방을 찾을 수 없습니다: ' + code }));
@@ -167,7 +155,6 @@ wss.on('connection', (ws) => {
           state: getRoomState(room)
         }));
 
-        // 방 전체에 입장 알림
         broadcast(room, {
           type: 'player_join',
           id: playerId,
@@ -180,7 +167,6 @@ wss.on('connection', (ws) => {
       }
 
       case 'start': {
-        // 방장만 시작 가능
         if (!currentRoom || currentRoom.hostId !== playerId) return;
         currentRoom.started = true;
         broadcast(currentRoom, {
@@ -192,7 +178,6 @@ wss.on('connection', (ws) => {
       }
 
       case 'pos': {
-        // 위치/상태 업데이트 → 같은 방 전체에 릴레이
         if (!currentRoom) return;
         info.x = msg.x ?? info.x;
         info.y = msg.y ?? info.y;
@@ -209,29 +194,18 @@ wss.on('connection', (ws) => {
           dead: info.dead,
           col: info.col,
           role: info.role
-        }, ws); // 본인 제외하고 전송
-        break;
-      }
-
-      case 'game': {
-        // 게임 상태 동기화 (패턴 인덱스, 스토리 등) - 방장 권한
-        if (!currentRoom || currentRoom.hostId !== playerId) return;
-        broadcast(currentRoom, {
-          type: 'game',
-          ...msg,
-          id: playerId
         }, ws);
         break;
       }
 
-      case 'chat': {
-        if (!currentRoom) return;
+      case 'game': {
+        // 방장 게임 상태 중계 (패턴/스토리 동기화)
+        if (!currentRoom || currentRoom.hostId !== playerId) return;
         broadcast(currentRoom, {
-          type: 'chat',
+          type: 'game',
           id: playerId,
-          name: info.name,
-          text: String(msg.text || '').slice(0, 100)
-        });
+          g: msg.g
+        }, ws);
         break;
       }
 
@@ -243,32 +217,29 @@ wss.on('connection', (ws) => {
   });
 
   function cleanup() {
-    if (currentRoom) {
-      currentRoom.clients.delete(ws);
-      broadcast(currentRoom, {
-        type: 'player_leave',
-        id: playerId,
-        state: getRoomState(currentRoom)
-      });
-      if (currentRoom.clients.size === 0) {
-        rooms.delete(currentRoom.code);
-      } else if (currentRoom.hostId === playerId) {
-        // 방장이 나가면 방 해체
+    if (!currentRoom) return;
+    currentRoom.clients.delete(ws);
+    broadcast(currentRoom, {
+      type: 'player_leave',
+      id: playerId,
+      state: getRoomState(currentRoom)
+    });
+    if (currentRoom.clients.size === 0 || currentRoom.hostId === playerId) {
+      if (currentRoom.hostId === playerId && currentRoom.clients.size > 0) {
         broadcast(currentRoom, { type: 'error', message: '방장이 나갔습니다' });
         for (const [other] of currentRoom.clients) {
           try { other.close(); } catch (e) {}
         }
-        rooms.delete(currentRoom.code);
       }
-      currentRoom = null;
+      rooms.delete(currentRoom.code);
     }
+    currentRoom = null;
   }
 
   ws.on('close', cleanup);
-  ws.on('error', cleanup);
+  ws.on('error', () => cleanup());
 });
 
-// 오래된 빈 방 정리
 setInterval(() => {
   for (const [code, room] of rooms) {
     if (room.clients.size === 0) rooms.delete(code);
@@ -276,6 +247,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-  console.log(`멀티 언더테일 서버 실행 중: http://localhost:${PORT}`);
-  console.log(`WebSocket 준비됨`);
+  console.log('멀티 언더테일 서버: http://localhost:' + PORT);
 });
